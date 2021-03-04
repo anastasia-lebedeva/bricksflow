@@ -23,4 +23,5 @@
   },
   "pythonPathSetter.sourceDirs": ["src"],
   "debug.internalConsoleOptions": "neverOpen",
+  "python.pythonPath": ".venv/bin/python",
 }
