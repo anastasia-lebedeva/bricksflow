@@ -22,6 +22,24 @@ parameters:
       gold_solutions.template_5_solution:
 
   featurestorebundle:
+    fs_environment: '%kernel.environment%'
+    db_name_suffix: '_feature_store'
+    tb_name_prefix: 'features_'
     entities:
-      - name: 'customer'
-        historization: True
+      - name: 'client'
+        id_column_name: 'client_id_hash'
+        id_column_type: 'STRING'
+        timeid_column_name: 'trigger_timestamp'
+        timeid_column_type: 'INT'
+
+services:
+  __myproject__.gold.features.feature.EntityConfigManager:
+    arguments:
+      - '%featurestorebundle.entities%'
+  __myproject__.gold.features.feature.FeatureStore:
+    arguments:
+      - '%featurestorebundle.fs_environment%'
+      - '%featurestorebundle.tb_name_prefix%'
+      - '%featurestorebundle.db_name_suffix%'
+  __myproject__.gold.features.feature.EntityManager:
+        

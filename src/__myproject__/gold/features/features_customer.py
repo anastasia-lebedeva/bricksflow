@@ -17,6 +17,7 @@ from pyspark.sql.dataframe import DataFrame
 from datalakebundle.notebook.decorators import dataFrameLoader, transformation, dataFrameSaver, notebookFunction
 from datalakebundle.table.TableManager import TableManager
 from __myproject__.gold.features.feature import feature
+from pyspark.sql import types as t
 
 # COMMAND ----------
 
@@ -37,6 +38,11 @@ def read_csv_mask_usage(source_csv_path: str, spark: SparkSession, logger: Logge
 
 # COMMAND ----------
 
-@feature(read_csv_mask_usage, description="My super feature")
+@feature(
+    read_csv_mask_usage,
+    description="My super feature", 
+    entity="country",
+    dtype=t.DoubleType()
+)
 def feature_test(df: DataFrame):
     return df.select(f.col("id", "value"))
