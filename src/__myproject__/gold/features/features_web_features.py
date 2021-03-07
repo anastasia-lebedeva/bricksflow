@@ -58,7 +58,6 @@ def read_sdm_web_data(spark: SparkSession):
 def read_web_data_detail(spark: SparkSession):
     return spark.read.table('sdm.web_data_detail')
 
-
 # COMMAND ----------
 
 # df_web_data = spark.read.parquet(
@@ -81,7 +80,11 @@ def read_web_data_detail(spark: SparkSession):
 #dbutils.widgets.text('time_window', '90', 'time_window')
 #dbutils.widgets.text('run_date', ((datetime.now().date() - timedelta(days=1)).strftime("%Y%m%d")), 'run_date')
 
-time_window = 90
+feature_parameters = {'time_window': 90,
+                     'prefix_name': 'web_analytics',
+                     'suffix_name': '__a0'}
+
+time_window = feature_parameters['time_window']
 run_date = datetime.now().date().strftime("%Y%m%d")
 start_date = (datetime.strptime(str(run_date), "%Y%m%d") - timedelta(days=time_window)).strftime("%Y%m%d")
 
@@ -94,8 +97,8 @@ print(f'Using run_date: {run_date}')
 
 # COMMAND ----------
 
-prefix_name = 'web_analytics'
-suffix_name = '__a0'
+# prefix_name = 'web_analytics'
+# suffix_name = '__a0'
 
 # COMMAND ----------
 
@@ -105,15 +108,49 @@ suffix_name = '__a0'
 
 # feature: web_analytics_mobile_user 
 
+# New: add tuntimecolumn
+from pyspark.sql.functions import lit
+
+@transformation(read_sdm_web_data, display=False)
+def sdm_web_data_with_rundate(df: DataFrame):
+    return df.withColumn('run_date', lit(run_date))
+
+
 @feature(
     read_sdm_web_data,
-    feature_name="{prefix_name}_desktop_user_{time_window}days",
+    feature_name=f"{feature_parameters['prefix_name']}_desktop_user_{feature_parameters['time_window']}days", 
     description="My super feature", 
     entity="client",
     id_column="client_id_hash",
-    timestamp=run_date, # or "timestamp_column"
-    dtype=t.DoubleType()
+    timeid_column="run_date",
+    dtype="DOUBLE"
 )
-def compute_desktop_user_for_tw(df: DataFrame):
-    return df.select(f.col("client_id_hash"))
+def param_feature_desktop_user_for_tw(df: DataFrame, feature_name=f"{feature_parameters['prefix_name']}_desktop_user_{feature_parameters['time_window']}days"):
+    
+    df_web_subset_01_mobil = (
+        df.select(
+            "session_start_datetime", "date", "client_id_hash", "device_type", "run_date"
+        )
+        .filter(f.col("date") >= start_date)
+        .filter(f.col("date") <= int(run_date))
+    )
 
+    # aggregation/calculation of feature
+    df_web_mobile_user = (
+        df_web_subset_01_mobil.drop_duplicates()
+        .withColumn(
+        "is_mobile",
+        f.when((f.col("device_type") == "mobile"), 1)
+        .when((f.col("device_type") == ("tablet"))
+                | (f.col("device_type") == ("desktop")), 0
+            )
+        )
+        .groupBy("client_id_hash", "run_date")
+        .agg(
+            f.round(f.avg("is_mobile"), 1).alias(
+                f"{feature_parameters['prefix_name']}_desktop_user_{feature_parameters['time_window']}days"
+            )
+        )
+    )
+
+    return df_web_mobile_user
