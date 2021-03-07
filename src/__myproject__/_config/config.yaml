@@ -23,8 +23,9 @@ parameters:
 
   featurestorebundle:
     fs_environment: '%kernel.environment%'
-    db_name_suffix: '_feature_store'
+    db_name: '%kernel.environment%_feature_store'
     tb_name_prefix: 'features_'
+
     entities:
       - name: 'client'
         id_column_name: 'client_id_hash'
@@ -38,8 +39,11 @@ services:
       - '%featurestorebundle.entities%'
   __myproject__.gold.features.feature.FeatureStore:
     arguments:
-      - '%featurestorebundle.fs_environment%'
-      - '%featurestorebundle.tb_name_prefix%'
-      - '%featurestorebundle.db_name_suffix%'
+      - '%featurestorebundle.db_name%'
   __myproject__.gold.features.feature.EntityManager:
-        
+    arguments:
+      - '%featurestorebundle.db_name%'
+      - '%featurestorebundle.tb_name_prefix%'
+  __myproject__.gold.features.feature.FeatureManager:
+    arguments:
+      - '%featurestorebundle.db_name%'
