@@ -39,7 +39,8 @@ from pyspark.sql.window import Window
 from datetime import datetime, timedelta
 from datalakebundle.notebook.decorators import dataFrameLoader, transformation, dataFrameSaver, notebookFunction
 from pyspark.sql import SparkSession
-from __myproject__.gold.features.feature import feature
+from __myproject__.gold.features.feature import feature, featureLoader
+from __myproject__.gold.features.feature import FeatureStore
 from pyspark.sql import types as t
 from pyspark.sql.dataframe import DataFrame
 
@@ -80,7 +81,7 @@ def read_web_data_detail(spark: SparkSession):
 #dbutils.widgets.text('time_window', '90', 'time_window')
 #dbutils.widgets.text('run_date', ((datetime.now().date() - timedelta(days=1)).strftime("%Y%m%d")), 'run_date')
 
-run_params = {'time_window': 90,
+run_params = {'time_window': 150,
                      'prefix_name': 'web_analytics',
                      'suffix_name': '__a0'}
 
@@ -114,7 +115,6 @@ from pyspark.sql.functions import lit
 @transformation(read_sdm_web_data, display=False)
 def sdm_web_data_with_rundate(df: DataFrame):
     return df.withColumn('run_date', lit(run_date))
-
 
 @feature(
     sdm_web_data_with_rundate,
@@ -156,7 +156,16 @@ def feature_desktop_user_for_tw(df: DataFrame): # , feature_name: str
     return df_web_mobile_user
 
 
-
-@featureLoader(env, display=True)
+@featureLoader(display=False)
 def load_covid_statistics(feature_store: FeatureStore):
-    return feature_store.get_all()
+    return feature_store.get(entity_name='client',
+                             feature_name_list=['web_analytics_desktop_user_90days'])
+
+@featureLoader(display=False)
+def load_covid_statistics(feature_store: FeatureStore):
+    return feature_store.get(entity_name='client',
+                             feature_name_list=['web_analytics_desktop_user_90days', 'web_analytics_desktop_user_120days'])
+                            
+@featureLoader(display=True)
+def load_covid_statistics(feature_store: FeatureStore):
+    return feature_store.get(entity_name='client')

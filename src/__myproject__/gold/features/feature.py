@@ -15,7 +15,7 @@ from datetime import datetime
 
 class Feature:
 
-    def __init__(self, name: str, description: str, entity_name: str, dtype: str): 
+    def __init__(self, name: str, entity_name: str, description: str, dtype: str): 
         
         self.name = name
         self.description = description
@@ -131,10 +131,10 @@ class FeatureManager:
         entity_tablename = self.__entity_manager.get_tablename(feature.entity_name)
         return self.__spark.sql(build_add_column_string(entity_tablename)).collect()
     
-    def is_registred(self, feature: Feature):
-        entity_tablename = self.__entity_manager.get_tablename(feature.entity_name)
-        for r in self.__spark.sql(f"SHOW COLUMNS IN {self.fs_db_name}.{entity_tablename}").collect():
-            if r.col_name == feature.name:
+    def is_registred(self, feature_name: str, entity_name:str):
+        entity_tablename = self.__entity_manager.get_full_tablename(entity_name)
+        for r in self.__spark.sql(f"SHOW COLUMNS IN {entity_tablename}").collect():
+            if r.col_name == feature_name:
                 return True
 
         return False
@@ -148,14 +148,17 @@ class FeatureManager:
         entity_tablename = self.__entity_manager.get_tablename(feature.entity_name)
         return self.__spark.sql(build_alter_column_string(entity_tablename)).collect()
     
-    def get_values(self, feature: Feature):
+    def get_values(self, feature_name: [str], entity_name:str):
 
-        entity = self.__entity_manager.get(feature.entity_name)
+        entity = self.__entity_manager.get(entity_name)
+        if not feature_name:
+            return self.__entity_manager.get_values(entity.name)
+
         return (self.__entity_manager.get_values(entity.name).select(
-                    feature.name,
-                    entity.id_column_name,
-                    entity.timeid_column_name)
-        )
+                    [entity.id_column_name,
+                    entity.timeid_column_name] + \
+                    feature_name)
+        )     
 
     def store_values(self, 
                      feature: Feature,
@@ -209,8 +212,8 @@ class FeatureStore:
     def __materialize_database(self):
         return self.__spark.sql(f'CREATE DATABASE IF NOT EXISTS {self.db_name}').collect()
         
-    def contains_feature(self, feature: Feature):
-        return self.__feature_manager.is_registred(feature)
+    def contains_feature(self, feature_name: str, entity_name: str):
+        return self.__feature_manager.is_registred(feature_name, entity_name)
     
     def contains_entity(self, entity_name: str):
         return self.__entity_manager.is_registred(entity_name)
@@ -218,15 +221,13 @@ class FeatureStore:
     def get_entity(self, entity_name: str):
         return self.__entity_manager.get(entity_name)
 
-    def get_feature_values(self, feature: Feature) -> DataFrame:
-
-        # register feature & entity if missing
-        if not self.__entity_manager.is_registred(feature.entity_name):
+    def register(self, feature: Feature): 
+        if not self.contains_entity(feature.entity_name):
             self.__entity_manager.register(feature.entity_name)
-        if not self.__feature_manager.is_registred(feature):
+        if not self.contains_feature(feature.name, feature.entity_name):
             self.__feature_manager.register(feature)
 
-        return self.__feature_manager.get_values(feature)
+        return True    
 
     def store_values(self, feature: Feature,
                            df_new_values: DataFrame,
@@ -238,19 +239,29 @@ class FeatureStore:
                                             input_df_id_column_name,
                                             input_df_timeid_column_name)
 
+    def get(self, entity_name: str, feature_name_list: [str]=[], date=None, date_from=None, date_to=None):
+        if not self.contains_entity(entity_name):
+            raise ValueError(f"Entity with name {entity_name} is not registred")
+        for feature_name in feature_name_list:
+            if not self.contains_feature(feature_name, entity_name):
+                raise ValueError(f"Feature with name {feature_name} is not registred for entity {entity_name}")
+
+        return self.__feature_manager.get_values(feature_name_list, entity_name)
+
 
 class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
 
     def __init__(self, *args, **kwargs): 
         
         self.__feature = Feature(name = kwargs.get('feature_name'),
-                               description=kwargs.get('description'),
                                entity_name=kwargs.get('entity'),
+                               description=kwargs.get('description'),
                                dtype=kwargs.get('dtype'))
 
         self.__df = args[0]._result
         self.__df_id_column = kwargs.get('id_column')
         self.__df_timeid_column = kwargs.get('timeid_column')
+        self.__display = kwargs.get('display')
 
     def __filter_computed_values(self,
                                 df_feature_cache: DataFrame,
@@ -296,8 +307,10 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
         argumentsResolver: ArgumentsResolver = container.get(ArgumentsResolver)
 
         # get already computed values from cache
-        df_feature_cache = feature_store.get_feature_values(feature=self.__feature)
+        feature_store.register(feature=self.__feature)
         entity = feature_store.get_entity(entity_name=self.__feature.entity_name)
+        df_feature_cache = feature_store.get(entity_name=self.__feature.entity_name,
+                                             feature_name_list=[self.__feature.name])
 
         # get only values to compute
         df_to_compute = self.__filter_computed_values(df_feature_cache,
@@ -322,7 +335,8 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
                                    input_df_id_column_name=self.__df_id_column,
                                    input_df_timeid_column_name=self.__df_timeid_column)
 
-        df_feature_values = feature_store.get_feature_values(feature=self.__feature)
+        df_feature_values = feature_store.get(entity_name=self.__feature.entity_name,
+                                             feature_name_list=[self.__feature.name])
         entity = feature_store.get_entity(entity_name=self.__feature.entity_name)
 
         # get values for all given id & timestamp
@@ -330,5 +344,14 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
                                                       entity.id_column_name,
                                                       entity.timeid_column_name)
 
-        displayFunction(self._result)
+        if self.__display and container.getParameters().datalakebundle.notebook.display.enabled is True:
+            displayFunction(self._result)
 
+class featureLoader(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
+
+    def __init__(self, *args, display=False): # pylint: disable = unused-argument
+        self._display = display
+
+    def afterExecution(self, container: ContainerInterface):
+        if self._display and container.getParameters().datalakebundle.notebook.display.enabled is True:
+            displayFunction(self._result)
