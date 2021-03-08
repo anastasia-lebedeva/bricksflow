@@ -10,6 +10,7 @@ from pyspark.sql.session import SparkSession
 from pyspark.sql.dataframe import DataFrame
 from pyspark.sql.functions import col
 from pyspark.sql.functions import lit
+from datetime import datetime
 
 
 class Feature:
@@ -19,7 +20,7 @@ class Feature:
         self.name = name
         self.description = description
         self.entity_name = entity_name
-        self.feature_dtype = dtype
+        self.dtype = dtype
 
 class Entity:
     def __init__(
@@ -73,26 +74,15 @@ class EntityManager:
      self.__table_existence_checker = table_existence_checker
      self.__spark = spark
 
-    def __get(self, entity_name: str) -> Entity:
-        
-        entity_config = self.__entity_config_manager.get(entity_name)
-        return Entity(entity_name, entity_config)
-
     def get_full_tablename(self, entity_name: str) -> str:
         return f'{self.fs_db_name}.{self.tb_name_prefix}{entity_name}'
 
     def get_tablename(self, entity_name: str) -> str:
         return f'{self.tb_name_prefix}{entity_name}'
 
-    def get(self, entity_name: str, register_if_missing: bool) -> Entity:
-
-        entity = self.__get(entity_name)
-        if not self.is_registred(entity_name):
-            if not register_if_missing:
-                raise ValueError("Entity is not registred yet. Set register_if_missing = True to materialize")
-            self.register(entity)
-
-        return entity
+    def get(self, entity_name: str) -> Entity:
+        entity_config = self.__entity_config_manager.get(entity_name)
+        return Entity(entity_name, entity_config)
     
     def get_values(self, entity_name: str):
         return self.__spark.read.table(self.get_full_tablename(entity_name))
@@ -102,18 +92,20 @@ class EntityManager:
             self.fs_db_name, self.get_tablename(entity_name)
         )
     
-    def register(self, entity: Entity):
-        def build_create_table_string(table_name):
+    def register(self, entity_name: str):
+        def build_create_entity_table_string(entity: Entity):
             return (
-                f'CREATE TABLE IF NOT EXISTS {self.db_name}.{table_name}\n'
+                f'CREATE TABLE IF NOT EXISTS {self.get_full_tablename(entity.name)}\n'
                 f'({entity.id_column_name} {entity.id_column_type} COMMENT "Entity id column",\n'
                 f'{entity.timeid_column_name} {entity.timeid_column_type} COMMENT "Compute time id column")\n'
                 f'USING DELTA\n'
                 f'PARTITIONED BY ({entity.timeid_column_name})\n'
                 f'COMMENT "The table contains entity {entity.name} features"\n'
         )
-        table_name = self.__get_entity_table_name(entity.name)
-        return self.__spark.sql(build_create_table_string(table_name)).collect()
+        entity_config = self.__entity_config_manager.get(entity_name)
+        entity = Entity(entity_name, entity_config)
+
+        return self.__spark.sql(build_create_entity_table_string(entity)).collect()
 
 class FeatureManager:
 
@@ -134,10 +126,10 @@ class FeatureManager:
         def build_add_column_string(table_name):
             return (
                 f'ALTER TABLE {self.fs_db_name}.{table_name}\n'
-                f'ADD COLUMNS ({feature.name} {feature.dtype} COMMENT "{feature.description})"\n'
+                f'ADD COLUMNS ({feature.name} {feature.dtype} COMMENT "{feature.description}")\n'
         )
-        table_name = self.__get_table_name(feature.entity_name)
-        return self.__spark.sql(build_add_column_string(table_name)).collect()
+        entity_tablename = self.__entity_manager.get_tablename(feature.entity_name)
+        return self.__spark.sql(build_add_column_string(entity_tablename)).collect()
     
     def is_registred(self, feature: Feature):
         entity_tablename = self.__entity_manager.get_tablename(feature.entity_name)
@@ -155,6 +147,44 @@ class FeatureManager:
         )
         entity_tablename = self.__entity_manager.get_tablename(feature.entity_name)
         return self.__spark.sql(build_alter_column_string(entity_tablename)).collect()
+    
+    def get_values(self, feature: Feature):
+
+        entity = self.__entity_manager.get(feature.entity_name)
+        return (self.__entity_manager.get_values(entity.name).select(
+                    feature.name,
+                    entity.id_column_name,
+                    entity.timeid_column_name)
+        )
+
+    def store_values(self, 
+                     feature: Feature,
+                     df_values: DataFrame,
+                     input_df_id_column_name: str,
+                     input_df_timeid_column_name: str):
+
+        def build_merge_into_string(entity, entity_tablename, view_tablename):
+            return (
+                f'MERGE INTO {entity_tablename} AS fs\n'
+                f'USING {view_tablename} AS newdata\n'
+                f'ON fs.{entity.id_column_name} = newdata.{input_df_id_column_name} '
+                f'AND fs.{entity.timeid_column_name} = newdata.{input_df_timeid_column_name}\n'
+                f'WHEN MATCHED THEN\n'
+                f'UPDATE SET fs.{feature.name} = newdata.{feature.name}\n'
+                f'WHEN NOT MATCHED\n'
+                f'THEN INSERT ({entity.id_column_name}, {entity.timeid_column_name}, {feature.name}) '
+                f'VALUES ({input_df_id_column_name}, {input_df_timeid_column_name}, {feature.name})\n'
+        )
+
+        entity = self.__entity_manager.get(feature.entity_name)
+        entity_tablename = self.__entity_manager.get_full_tablename(feature.entity_name)
+        
+        # store data to a view
+        run_date = datetime.now().date().strftime("%Y%m%d")
+        view_tablename = f'fv_{feature.name}_{run_date}'
+        df_values.createOrReplaceTempView(view_tablename)
+
+        return self.__spark.sql(build_merge_into_string(entity, entity_tablename, view_tablename)).collect()
 
 
 class FeatureStore:
@@ -182,64 +212,83 @@ class FeatureStore:
     def contains_feature(self, feature: Feature):
         return self.__feature_manager.is_registred(feature)
     
-    def register_feature(self, feature: Feature):
-        return self.__feature_manager.register(feature)
-    
     def contains_entity(self, entity_name: str):
         return self.__entity_manager.is_registred(entity_name)
+    
+    def get_entity(self, entity_name: str):
+        return self.__entity_manager.get(entity_name)
 
-    def join_with_feature_cache(self,
-                                feature: Feature,
-                                df_input: DataFrame,
-                                input_df_id_column_name: str,
-                                input_df_timeid_column_name: str) -> DataFrame:
+    def get_feature_values(self, feature: Feature) -> DataFrame:
 
-        # fetch entity, register if is missing 
-        entity = self.__entity_manager.get(feature.entity_name, register_if_missing=True)
-
-        # return all None if feature is not registered yet
+        # register feature & entity if missing
+        if not self.__entity_manager.is_registred(feature.entity_name):
+            self.__entity_manager.register(feature.entity_name)
         if not self.__feature_manager.is_registred(feature):
-            return df_input.withColumn(feature.name, lit(None))
+            self.__feature_manager.register(feature)
 
-        # join with computed values of feature os registered
-        df_cache_feature = (self.__entity_manager.get_values(entity.name)
-            .select(
-                feature.name,
-                entity.id_column_name,
-                entity.timeid_column_name
-            )
-        ) 
+        return self.__feature_manager.get_values(feature)
 
-        df_join = (
-            df_input.join(df_cache_feature,
-                (df_input(input_df_id_column_name) == df_cache_feature(entity.id_column_name) & \
-                df_input(input_df_timeid_column_name) == df_cache_feature(entity.timeid_column_name)),
-                "left"
-            )
-        )
-
-        return df_join
-
-    #def store_values(self, feature: Feature,
-    #                       entity: Entity,
-    #                       df: DataFrame,
-    #                       input_df_id_column_name: str,
-    #                       input_df_timeid_column_name: str):
-    #    pass
+    def store_values(self, feature: Feature,
+                           df_new_values: DataFrame,
+                           input_df_id_column_name: str,
+                           input_df_timeid_column_name: str):
+        
+        self.__feature_manager.store_values(feature,
+                                            df_new_values,
+                                            input_df_id_column_name,
+                                            input_df_timeid_column_name)
 
 
 class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
 
     def __init__(self, *args, **kwargs): 
         
-        self._feature = Feature(name = kwargs.get('feature_name'),
+        self.__feature = Feature(name = kwargs.get('feature_name'),
                                description=kwargs.get('description'),
                                entity_name=kwargs.get('entity'),
                                dtype=kwargs.get('dtype'))
 
-        self._df = args[0]._result
-        self._df_id_column = kwargs.get('id_column')
-        self._df_timeid_column = kwargs.get('timeid_column')
+        self.__df = args[0]._result
+        self.__df_id_column = kwargs.get('id_column')
+        self.__df_timeid_column = kwargs.get('timeid_column')
+
+    def __filter_computed_values(self,
+                                df_feature_cache: DataFrame,
+                                df_feature_id_column_name: str,
+                                df_feature_timeid_column_name: str
+                                ) -> DataFrame:
+        return (
+            self.__df
+            .alias("df_input")
+            .join(
+                df_feature_cache.alias("df_feature"),
+                ((col(f"df_input.{self.__df_id_column}") == col(f"df_feature.{df_feature_id_column_name}")) & \
+                 (col(f"df_input.{self.__df_timeid_column}") == col(f"df_feature.{df_feature_timeid_column_name}"))),
+                "left"
+            )
+            .where(col(self.__feature.name).isNull())
+            .select("df_input.*")
+        )
+    
+    def __build_result_feature_df(self,
+                                df_feature_values: DataFrame,
+                                df_feature_id_column_name: str,
+                                df_feature_timeid_column_name: str
+                                )-> DataFrame:
+        return (
+            self.__df
+            .alias("df_result")
+            .select([self.__df_id_column, self.__df_timeid_column])
+            .drop_duplicates()
+            .join(df_feature_values.alias("df_feature"),
+                ((col(f"df_result.{self.__df_id_column}") == col(f"df_feature.{df_feature_id_column_name}")) & \
+                 (col(f"df_result.{self.__df_timeid_column}") == col(f"df_feature.{df_feature_timeid_column_name}"))),
+                "left"
+            )
+            .select("df_result.*", f"df_feature.{self.__feature.name}")
+            .where(col(f"df_feature.{self.__feature.name}").isNotNull())
+        )
+
 
     def onExecution(self, container: ContainerInterface):
 
@@ -247,16 +296,17 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
         argumentsResolver: ArgumentsResolver = container.get(ArgumentsResolver)
 
         # get already computed values from cache
-        df_input_cache_join = feature_store.join_with_feature_cache(feature=self._feature, 
-                                                                    df_input=self._df,
-                                                                    input_df_id_column_name=self._df_id_column,
-                                                                    input_df_timeid_column_name=self._df_timeid_column)
+        df_feature_cache = feature_store.get_feature_values(feature=self.__feature)
+        entity = feature_store.get_entity(entity_name=self.__feature.entity_name)
 
-        df_computed = df_input_cache_join.where(col(self._feature.name).isNotNull())
-        df_to_compute = df_input_cache_join.where(col(self._feature.name).isNull())
+        # get only values to compute
+        df_to_compute = self.__filter_computed_values(df_feature_cache,
+                                                      entity.id_column_name,
+                                                      entity.timeid_column_name)
 
         # call function for not computed only 
-        arguments = argumentsResolver.resolve(inspectFunction(self._function), self._decoratorArgs)
+        functions_args = inspectFunction(self._function)
+        arguments = argumentsResolver.resolve(functions_args, self._decoratorArgs)
         arguments_list = list(arguments); arguments_list[0] = df_to_compute
         arguments = tuple(arguments_list)
 
@@ -267,13 +317,18 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
         
         feature_store: feature_store = container.get(FeatureStore)
         
-        if not feature_store.contains_feature(self._feature):
-            feature_store.register_feature(self._feature)
-        
-        #df_output = feature_store.store_values(feature=self._feature, 
-        #                                       df=self._result,
-        #                                       input_df_id_column_name=self._df_id_column,
-        #                                       input_df_timeid_column_name=self._df_timeid_column)
+        feature_store.store_values(feature=self.__feature, 
+                                   df_new_values=self._result,
+                                   input_df_id_column_name=self.__df_id_column,
+                                   input_df_timeid_column_name=self.__df_timeid_column)
 
+        df_feature_values = feature_store.get_feature_values(feature=self.__feature)
+        entity = feature_store.get_entity(entity_name=self.__feature.entity_name)
+
+        # get values for all given id & timestamp
+        self._result = self.__build_result_feature_df(df_feature_values,
+                                                      entity.id_column_name,
+                                                      entity.timeid_column_name)
 
         displayFunction(self._result)
+

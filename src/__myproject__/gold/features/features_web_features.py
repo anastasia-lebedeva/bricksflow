@@ -80,11 +80,11 @@ def read_web_data_detail(spark: SparkSession):
 #dbutils.widgets.text('time_window', '90', 'time_window')
 #dbutils.widgets.text('run_date', ((datetime.now().date() - timedelta(days=1)).strftime("%Y%m%d")), 'run_date')
 
-feature_parameters = {'time_window': 90,
+run_params = {'time_window': 90,
                      'prefix_name': 'web_analytics',
                      'suffix_name': '__a0'}
 
-time_window = feature_parameters['time_window']
+time_window = run_params['time_window']
 run_date = datetime.now().date().strftime("%Y%m%d")
 start_date = (datetime.strptime(str(run_date), "%Y%m%d") - timedelta(days=time_window)).strftime("%Y%m%d")
 
@@ -117,16 +117,18 @@ def sdm_web_data_with_rundate(df: DataFrame):
 
 
 @feature(
-    read_sdm_web_data,
-    feature_name=f"{feature_parameters['prefix_name']}_desktop_user_{feature_parameters['time_window']}days", 
+    sdm_web_data_with_rundate,
+    feature_name=f"{run_params['prefix_name']}_desktop_user_{run_params['time_window']}days",
     description="My super feature", 
     entity="client",
     id_column="client_id_hash",
     timeid_column="run_date",
     dtype="DOUBLE"
 )
-def param_feature_desktop_user_for_tw(df: DataFrame, feature_name=f"{feature_parameters['prefix_name']}_desktop_user_{feature_parameters['time_window']}days"):
-    
+def feature_desktop_user_for_tw(df: DataFrame): # , feature_name: str
+
+    feature_name=f"{run_params['prefix_name']}_desktop_user_{run_params['time_window']}days"
+
     df_web_subset_01_mobil = (
         df.select(
             "session_start_datetime", "date", "client_id_hash", "device_type", "run_date"
@@ -147,10 +149,14 @@ def param_feature_desktop_user_for_tw(df: DataFrame, feature_name=f"{feature_par
         )
         .groupBy("client_id_hash", "run_date")
         .agg(
-            f.round(f.avg("is_mobile"), 1).alias(
-                f"{feature_parameters['prefix_name']}_desktop_user_{feature_parameters['time_window']}days"
-            )
+            f.round(f.avg("is_mobile"), 1).alias(feature_name)
         )
     )
 
     return df_web_mobile_user
+
+
+
+@featureLoader(env, display=True)
+def load_covid_statistics(feature_store: FeatureStore):
+    return feature_store.get_all()
