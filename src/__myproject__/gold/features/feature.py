@@ -11,6 +11,7 @@ from pyspark.sql.dataframe import DataFrame
 from pyspark.sql.functions import col
 from pyspark.sql.functions import lit
 from datetime import datetime
+from typing import List
 
 
 class Feature:
@@ -86,6 +87,11 @@ class EntityManager:
     
     def get_values(self, entity_name: str):
         return self.__spark.read.table(self.get_full_tablename(entity_name))
+    
+    def get_registred_feature_names(self, entity_name: str):
+        tname = self.get_full_tablename(entity_name)
+        col_objects = self.__spark.sql(f"SHOW COLUMNS IN {tname}").collect()
+        return set([r.col_name for r in col_objects])
 
     def is_registred(self, entity_name: str) -> bool:
         return self.__table_existence_checker.tableExists(
@@ -132,12 +138,12 @@ class FeatureManager:
         return self.__spark.sql(build_add_column_string(entity_tablename)).collect()
     
     def is_registred(self, feature_name: str, entity_name:str):
-        entity_tablename = self.__entity_manager.get_full_tablename(entity_name)
-        for r in self.__spark.sql(f"SHOW COLUMNS IN {entity_tablename}").collect():
-            if r.col_name == feature_name:
-                return True
 
-        return False
+        if not self.__entity_manager.is_registred(entity_name):
+            return False
+
+        return feature_name in \
+                self.__entity_manager.get_registred_feature_names(entity_name)
 
     def update_metadata(self, feature: Feature):
         def build_alter_column_string(table_name):
@@ -154,17 +160,20 @@ class FeatureManager:
         if not feature_name:
             return self.__entity_manager.get_values(entity.name)
 
-        return (self.__entity_manager.get_values(entity.name).select(
-                    [entity.id_column_name,
-                    entity.timeid_column_name] + \
-                    feature_name)
+        return (
+            self.__entity_manager.get_values(entity.name)
+            .select(
+                [entity.id_column_name,
+                entity.timeid_column_name] + \
+                feature_name
+            )
         )     
 
-    def store_values(self, 
-                     feature: Feature,
-                     df_values: DataFrame,
-                     input_df_id_column_name: str,
-                     input_df_timeid_column_name: str):
+    def update_existing_insert_new_values(self, 
+                                        feature: Feature,
+                                        df_values: DataFrame,
+                                        input_df_id_column_name: str,
+                                        input_df_timeid_column_name: str):
 
         def build_merge_into_string(entity, entity_tablename, view_tablename):
             return (
@@ -211,37 +220,36 @@ class FeatureStore:
 
     def __materialize_database(self):
         return self.__spark.sql(f'CREATE DATABASE IF NOT EXISTS {self.db_name}').collect()
-        
+
+    def __register(self, feature: Feature): 
+        if not self.__entity_manager.is_registred(feature.entity_name):
+            self.__entity_manager.register(feature.entity_name)
+        if not self.contains_feature(feature.name, feature.entity_name):
+            self.__feature_manager.register(feature)    
+
     def contains_feature(self, feature_name: str, entity_name: str):
         return self.__feature_manager.is_registred(feature_name, entity_name)
-    
-    def contains_entity(self, entity_name: str):
-        return self.__entity_manager.is_registred(entity_name)
     
     def get_entity(self, entity_name: str):
         return self.__entity_manager.get(entity_name)
 
-    def register(self, feature: Feature): 
-        if not self.contains_entity(feature.entity_name):
-            self.__entity_manager.register(feature.entity_name)
+    def update(self, feature: Feature, df_new_values: DataFrame,
+            input_df_id_column_name: str, input_df_timeid_column_name: str):
+
         if not self.contains_feature(feature.name, feature.entity_name):
-            self.__feature_manager.register(feature)
+            self.__register(feature)
 
-        return True    
+        self.__feature_manager.update_existing_insert_new_values(
+            feature,
+            df_new_values,
+            input_df_id_column_name,
+            input_df_timeid_column_name
+        )
 
-    def store_values(self, feature: Feature,
-                           df_new_values: DataFrame,
-                           input_df_id_column_name: str,
-                           input_df_timeid_column_name: str):
-        
-        self.__feature_manager.store_values(feature,
-                                            df_new_values,
-                                            input_df_id_column_name,
-                                            input_df_timeid_column_name)
+    def get(self, entity_name: str, feature_name_list: List[str]=None):
 
-    def get(self, entity_name: str, feature_name_list: [str]=[], date=None, date_from=None, date_to=None):
-        if not self.contains_entity(entity_name):
-            raise ValueError(f"Entity with name {entity_name} is not registred")
+        feature_name_list = feature_name_list or []
+
         for feature_name in feature_name_list:
             if not self.contains_feature(feature_name, entity_name):
                 raise ValueError(f"Feature with name {feature_name} is not registred for entity {entity_name}")
@@ -261,6 +269,8 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
         self.__df = args[0]._result
         self.__df_id_column = kwargs.get('id_column')
         self.__df_timeid_column = kwargs.get('timeid_column')
+        self.__skip_computed = kwargs.get('skip_computed')
+        self.__write = kwargs.get('write')
         self.__display = kwargs.get('display')
 
     def __filter_computed_values(self,
@@ -281,68 +291,93 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
             .select("df_input.*")
         )
     
-    def __build_result_feature_df(self,
-                                df_feature_values: DataFrame,
-                                df_feature_id_column_name: str,
-                                df_feature_timeid_column_name: str
-                                )-> DataFrame:
+    def __get_feature_df_for_input_id_timeid(self,
+                                            df_feature_values: DataFrame,
+                                            df_feature_id_column_name: str,
+                                            df_feature_timeid_column_name: str
+                                            ) -> DataFrame:
         return (
             self.__df
-            .alias("df_result")
+            .alias("df_input")
             .select([self.__df_id_column, self.__df_timeid_column])
             .drop_duplicates()
             .join(df_feature_values.alias("df_feature"),
-                ((col(f"df_result.{self.__df_id_column}") == col(f"df_feature.{df_feature_id_column_name}")) & \
-                 (col(f"df_result.{self.__df_timeid_column}") == col(f"df_feature.{df_feature_timeid_column_name}"))),
+                ((col(f"df_input.{self.__df_id_column}") == col(f"df_feature.{df_feature_id_column_name}")) & \
+                 (col(f"df_input.{self.__df_timeid_column}") == col(f"df_feature.{df_feature_timeid_column_name}"))),
                 "left"
             )
-            .select("df_result.*", f"df_feature.{self.__feature.name}")
+            .select("df_input.*", f"df_feature.{self.__feature.name}")
             .where(col(f"df_feature.{self.__feature.name}").isNotNull())
         )
 
 
     def onExecution(self, container: ContainerInterface):
 
-        feature_store: feature_store = container.get(FeatureStore)
+        if not self.__write and self.__skip_computed:
+            raise ValueError("Option when write=False and skip_computed=True is not implemented yet")
+
+        feature_store: FeatureStore = container.get(FeatureStore)
         argumentsResolver: ArgumentsResolver = container.get(ArgumentsResolver)
+        arguments = argumentsResolver.resolve(inspectFunction(self._function), self._decoratorArgs)
 
-        # get already computed values from cache
-        feature_store.register(feature=self.__feature)
-        entity = feature_store.get_entity(entity_name=self.__feature.entity_name)
-        df_feature_cache = feature_store.get(entity_name=self.__feature.entity_name,
-                                             feature_name_list=[self.__feature.name])
+        # proceed if feature is not registred
+        if not feature_store.contains_feature(self.__feature.name, self.__feature.entity_name):
+            return self._function(*arguments)
+        
+        # proceeed of requested in decorator args
+        if not self.__skip_computed:
+            return self._function(*arguments)
+        
+        # otherwise, align with computed values
+        entity = feature_store.get_entity(
+            entity_name=self.__feature.entity_name
+        )
 
-        # get only values to compute
-        df_to_compute = self.__filter_computed_values(df_feature_cache,
-                                                      entity.id_column_name,
-                                                      entity.timeid_column_name)
+        df_feature_cache = feature_store.get(
+            entity_name=entity.name,
+            feature_name_list=[self.__feature.name]
+        )
 
-        # call function for not computed only 
-        functions_args = inspectFunction(self._function)
-        arguments = argumentsResolver.resolve(functions_args, self._decoratorArgs)
-        arguments_list = list(arguments); arguments_list[0] = df_to_compute
+        df_to_compute = self.__filter_computed_values(
+            df_feature_cache=df_feature_cache,
+            df_feature_id_column_name=entity.id_column_name,
+            df_feature_timeid_column_name=entity.timeid_column_name
+        )
+        
+        # add modified df as function argument
+        arguments_list = list(arguments)
+        arguments_list[0] = df_to_compute
         arguments = tuple(arguments_list)
 
         return self._function(*arguments)
 
-    
     def afterExecution(self, container: ContainerInterface):
         
-        feature_store: feature_store = container.get(FeatureStore)
+        feature_store: FeatureStore = container.get(FeatureStore)
         
-        feature_store.store_values(feature=self.__feature, 
-                                   df_new_values=self._result,
-                                   input_df_id_column_name=self.__df_id_column,
-                                   input_df_timeid_column_name=self.__df_timeid_column)
+        if self.__write:
+            feature_store.update(
+                feature=self.__feature, 
+                df_new_values=self._result,
+                input_df_id_column_name=self.__df_id_column,
+                input_df_timeid_column_name=self.__df_timeid_column
+            )
 
-        df_feature_values = feature_store.get(entity_name=self.__feature.entity_name,
-                                             feature_name_list=[self.__feature.name])
-        entity = feature_store.get_entity(entity_name=self.__feature.entity_name)
+            entity = feature_store.get_entity(
+                entity_name=self.__feature.entity_name
+            )
 
-        # get values for all given id & timestamp
-        self._result = self.__build_result_feature_df(df_feature_values,
-                                                      entity.id_column_name,
-                                                      entity.timeid_column_name)
+            df_feature_values = feature_store.get(
+                entity_name=entity.name,
+                feature_name_list=[self.__feature.name]
+            )
+
+            # get values for all given id & timestamp, filter null 
+            self._result = self.__get_feature_df_for_input_id_timeid(
+                df_feature_values,
+                entity.id_column_name,
+                entity.timeid_column_name
+            )
 
         if self.__display and container.getParameters().datalakebundle.notebook.display.enabled is True:
             displayFunction(self._result)

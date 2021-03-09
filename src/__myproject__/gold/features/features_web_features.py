@@ -120,10 +120,13 @@ def sdm_web_data_with_rundate(df: DataFrame):
     sdm_web_data_with_rundate,
     feature_name=f"{run_params['prefix_name']}_desktop_user_{run_params['time_window']}days",
     description="My super feature", 
-    entity="client",
     id_column="client_id_hash",
     timeid_column="run_date",
-    dtype="DOUBLE"
+    entity="client",
+    dtype="DOUBLE",
+    skip_computed=True,
+    write=True,
+    display=True
 )
 def feature_desktop_user_for_tw(df: DataFrame): # , feature_name: str
 
@@ -156,16 +159,16 @@ def feature_desktop_user_for_tw(df: DataFrame): # , feature_name: str
     return df_web_mobile_user
 
 
-@featureLoader(display=False)
+@featureLoader(display=True)
 def load_covid_statistics(feature_store: FeatureStore):
     return feature_store.get(entity_name='client',
-                             feature_name_list=['web_analytics_desktop_user_90days'])
+                            feature_name_list=['web_analytics_desktop_user_90days'])
 
-@featureLoader(display=False)
+@featureLoader(display=True)
 def load_covid_statistics(feature_store: FeatureStore):
     return feature_store.get(entity_name='client',
-                             feature_name_list=['web_analytics_desktop_user_90days', 'web_analytics_desktop_user_120days'])
-                            
+                            feature_name_list=['web_analytics_desktop_user_90days', 'web_analytics_desktop_user_120days'])
+                        
 @featureLoader(display=True)
 def load_covid_statistics(feature_store: FeatureStore):
     return feature_store.get(entity_name='client')
