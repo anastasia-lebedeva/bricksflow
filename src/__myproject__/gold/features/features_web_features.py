@@ -159,15 +159,15 @@ def feature_desktop_user_for_tw(df: DataFrame): # , feature_name: str
     return df_web_mobile_user
 
 
-@featureLoader(display=True)
-def load_covid_statistics(feature_store: FeatureStore):
-    return feature_store.get(entity_name='client',
-                            feature_name_list=['web_analytics_desktop_user_90days'])
+# @featureLoader(display=True)
+# def load_covid_statistics(feature_store: FeatureStore):
+#     return feature_store.get(entity_name='client',
+#                             feature_name_list=['web_analytics_desktop_user_90days'])
 
-@featureLoader(display=True)
-def load_covid_statistics(feature_store: FeatureStore):
-    return feature_store.get(entity_name='client',
-                            feature_name_list=['web_analytics_desktop_user_90days', 'web_analytics_desktop_user_120days'])
+# @featureLoader(display=True)
+# def load_covid_statistics(feature_store: FeatureStore):
+#     return feature_store.get(entity_name='client',
+#                             feature_name_list=['web_analytics_desktop_user_90days', 'web_analytics_desktop_user_120days'])
                         
 @featureLoader(display=True)
 def load_covid_statistics(feature_store: FeatureStore):
