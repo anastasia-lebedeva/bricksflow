@@ -278,12 +278,6 @@ class FeatureStore:
 
         return df_join
 
-#class featureInputFilterer
-#class featureOutput
-#class featureRegister
-#class featureExistanceChecker
-#class featureValuesFetcher 
-
 class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
 
     def __init__(self, *args, **kwargs): # TODO: add explicit 
@@ -317,8 +311,6 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
         if not self.__skip_computed:
             return self._function(*arguments)
         
-        print(f"Input size #rows {self.__df.count()}")
-
         # get feature values for given ids 
         df_for_id_timeid = feature_store._get_for_id_timeid(
             entity_name=self.__feature.entity_name,
@@ -368,10 +360,23 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
                 feature_name_list=[self.__feature.name]
             )
 
-        print(f"Result #rows {self._result.count()}")
-
         if self.__display and container.getParameters().datalakebundle.notebook.display.enabled is True:
             displayFunction(self._result)
+
+class clientFeature(feature, metaclass=DecoratorMetaclass):
+
+    def __init__(
+        self,
+        *args,
+        **kwargs
+    ):
+
+        super().__init__( 
+            *args,
+            **kwargs,
+            entity = 'client', 
+            id_column = 'client_id_hash'
+        )
 
 class featureLoader(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
 

@@ -26,7 +26,7 @@
 
 # COMMAND ----------
 
-# %run /dev/_init
+# MAGIC %run ../../app/install_master_package
 
 # COMMAND ----------
 
@@ -34,15 +34,17 @@
 
 # COMMAND ----------
 
-import pyspark.sql.functions as f
+
 from pyspark.sql.window import Window
 from datetime import datetime, timedelta
 from datalakebundle.notebook.decorators import dataFrameLoader, transformation, dataFrameSaver, notebookFunction
 from pyspark.sql import SparkSession
-from __myproject__.gold.features.feature import feature, featureLoader
+from __myproject__.gold.features.feature import feature, featureLoader, clientFeature
 from __myproject__.gold.features.feature import FeatureStore
 from pyspark.sql import types as t
 from pyspark.sql.dataframe import DataFrame
+import pyspark.sql.functions as f
+
 
 # COMMAND ----------
 
@@ -81,11 +83,7 @@ def read_web_data_detail(spark: SparkSession):
 #dbutils.widgets.text('time_window', '90', 'time_window')
 #dbutils.widgets.text('run_date', ((datetime.now().date() - timedelta(days=1)).strftime("%Y%m%d")), 'run_date')
 
-run_params = {'time_window': 150,
-                     'prefix_name': 'web_analytics',
-                     'suffix_name': '__a0'}
-
-time_window = run_params['time_window']
+time_window = 90
 run_date = datetime.now().date().strftime("%Y%m%d")
 start_date = (datetime.strptime(str(run_date), "%Y%m%d") - timedelta(days=time_window)).strftime("%Y%m%d")
 
@@ -98,8 +96,8 @@ print(f'Using run_date: {run_date}')
 
 # COMMAND ----------
 
-# prefix_name = 'web_analytics'
-# suffix_name = '__a0'
+prefix_name = 'web_analytics'
+suffix_name = '__a0'
 
 # COMMAND ----------
 
@@ -110,39 +108,38 @@ print(f'Using run_date: {run_date}')
 # feature: web_analytics_mobile_user 
 
 # New: add tuntimecolumn
-from pyspark.sql.functions import lit
-
 @transformation(read_sdm_web_data, display=False)
-def sdm_web_data_with_rundate(df: DataFrame):
-    return df.withColumn('run_date', lit(run_date))
-
-@feature(
-    sdm_web_data_with_rundate,
-    feature_name=f"{run_params['prefix_name']}_desktop_user_{run_params['time_window']}days",
-    description="My super feature", 
-    id_column="client_id_hash",
-    timeid_column="run_date",
-    entity="client",
-    dtype="DOUBLE",
-    skip_computed=True,
-    write=True,
-    display=True
-)
-def feature_desktop_user_for_tw(df: DataFrame): # , feature_name: str
-
-    feature_name=f"{run_params['prefix_name']}_desktop_user_{run_params['time_window']}days"
-
-    df_web_subset_01_mobil = (
-        df.select(
-            "session_start_datetime", "date", "client_id_hash", "device_type", "run_date"
+def sdm_web_data_with_rundate_filtered(df: DataFrame):
+    return (df
+           .withColumn('run_date', f.lit(run_date))
+           .select(
+                "session_start_datetime",
+                "date",
+                "client_id_hash",
+                "device_type",
+                "run_date"
         )
         .filter(f.col("date") >= start_date)
         .filter(f.col("date") <= int(run_date))
     )
 
+@clientFeature(
+    sdm_web_data_with_rundate_filtered,
+    feature_name=f"{prefix_name}_desktop_user_{time_window}days",
+    description="My super feature", 
+    timeid_column="run_date",
+    dtype="DOUBLE",
+    skip_computed=True,
+    write=True,
+    display=True
+)
+def feature_desktop_user_for_tw(df: DataFrame):
+
+    feature_name=f"{prefix_name}_desktop_user_{time_window}days"
+
     # aggregation/calculation of feature
     df_web_mobile_user = (
-        df_web_subset_01_mobil.drop_duplicates()
+        df.drop_duplicates()
         .withColumn(
         "is_mobile",
         f.when((f.col("device_type") == "mobile"), 1)
