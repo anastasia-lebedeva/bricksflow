@@ -105,8 +105,6 @@ suffix_name = '__a0'
 
 # COMMAND ----------
 
-# feature: web_analytics_mobile_user 
-
 # New: add tuntimecolumn
 @transformation(read_sdm_web_data, display=False)
 def sdm_web_data_with_rundate_filtered(df: DataFrame):
@@ -123,64 +121,109 @@ def sdm_web_data_with_rundate_filtered(df: DataFrame):
         .filter(f.col("date") <= int(run_date))
     )
 
+# COMMAND ----------
+# feature: web_analytics_mobile_user 
+
+
+@clientFeature(
+    sdm_web_data_with_rundate_filtered,
+    feature_name=[f"{prefix_name}_mobile_user_{time_window}days", f"{prefix_name}_tablet_user_{time_window}days"],
+    description=["Web analytics feature for mobile user", "Web analytics feature for tablet user"],
+    dtype=["DOUBLE", "DOUBLE"],
+    timeid_column="run_date",
+    skip_computed=True,
+    write=True,
+    display=True
+)
+def feature_mobile_tablet_user_for_tw(df: DataFrame):
+
+    feature_mob_name=f"{prefix_name}_mobile_user_{time_window}days"
+    feature_tabl_name=f"{prefix_name}_tablet_user_{time_window}days"
+
+    # aggregation/calculation of feature
+    return (
+        df.drop_duplicates()
+        .withColumn(
+            "is_mobile",
+            f.when((f.col("device_type") == "mobile"), 1)
+            .when((f.col("device_type") == ("tablet"))
+                    | (f.col("device_type") == ("desktop")), 0
+                )
+        )
+        .withColumn(
+            "is_tablet",
+            f.when((f.col("device_type") == "tablet"), 1).when(
+                (f.col("device_type") == ("mobile"))
+                | (f.col("device_type") == ("desktop")), 0
+            )
+        )
+        .groupBy("client_id_hash", "run_date")
+        .agg(
+            f.round(f.avg("is_mobile"), 1).alias(feature_mob_name),
+            f.round(f.avg("is_tablet"), 1).alias(feature_tabl_name)
+        )
+    )
+
+# COMMAND ----------
+
 @clientFeature(
     sdm_web_data_with_rundate_filtered,
     feature_name=f"{prefix_name}_desktop_user_{time_window}days",
-    description="My super feature", 
-    timeid_column="run_date",
+    description="Web analytics feature for desktop user",
     dtype="DOUBLE",
+    timeid_column="run_date",
     skip_computed=True,
     write=True,
     display=True
 )
 def feature_desktop_user_for_tw(df: DataFrame):
 
-    feature_name=f"{prefix_name}_desktop_user_{time_window}days"
+    feature_desc_name=f"{prefix_name}_desktop_user_{time_window}days"
 
     # aggregation/calculation of feature
-    df_web_mobile_user = (
+    return (
         df.drop_duplicates()
         .withColumn(
-        "is_mobile",
-        f.when((f.col("device_type") == "mobile"), 1)
-        .when((f.col("device_type") == ("tablet"))
-                | (f.col("device_type") == ("desktop")), 0
+            "is_desktop",
+            f.when((f.col("device_type") == "desktop"), 1).when(
+                (f.col("device_type") == ("mobile"))
+                | (f.col("device_type") == ("tablet")),
+                0
             )
         )
         .groupBy("client_id_hash", "run_date")
         .agg(
-            f.round(f.avg("is_mobile"), 1).alias(feature_name)
+            f.round(f.avg("is_desktop"), 1).alias(feature_desc_name)
         )
     )
 
-    return df_web_mobile_user
-
+# COMMAND ----------
 
 # MAGIC %md #### Access values in feature store
 
-@featureLoader(display=True)
-def load_features_onefeature(feature_store: FeatureStore):
-    return feature_store.get(entity_name='client',
-                            feature_name_list=['web_analytics_desktop_user_90days'])
+# @featureLoader(display=True)
+# def load_features_onefeature(feature_store: FeatureStore):
+#     return feature_store.get(entity_name='client',
+#                             feature_name_list=['web_analytics_desktop_user_90days'])
 
-@featureLoader(display=True)
-def load_features_multiple(feature_store: FeatureStore):
-    return feature_store.get(entity_name='client',
-                            feature_name_list=['web_analytics_desktop_user_90days', 'web_analytics_desktop_user_120days'])
+# @featureLoader(display=True)
+# def load_features_multiple(feature_store: FeatureStore):
+#     return feature_store.get(entity_name='client',
+#                             feature_name_list=['web_analytics_desktop_user_90days', 'web_analytics_desktop_user_120days'])
                         
-@featureLoader(display=True)
-def load_features_all(feature_store: FeatureStore):
-    return feature_store.get(entity_name='client')
+# @featureLoader(display=True)
+# def load_features_all(feature_store: FeatureStore):
+#     return feature_store.get(entity_name='client')
 
-@featureLoader(
-    sdm_web_data_with_rundate_filtered,
-    display=True
-)
-def load_features_for_id_timeid(df: DataFrame, feature_store: FeatureStore):
-     return feature_store.get_for_id_timeid(
-        df_id_timeid=df,
-        entity_name='client',
-        feature_name_list=['web_analytics_desktop_user_90days'],
-        df_id_column_name='client_id_hash',
-        df_timeid_column_name='run_date'
-    )
+# @featureLoader(
+#     sdm_web_data_with_rundate_filtered,
+#     display=True
+# )
+# def load_features_for_id_timeid(df: DataFrame, feature_store: FeatureStore):
+#      return feature_store.get_for_id_timeid(
+#         df_id_timeid=df,
+#         entity_name='client',
+#         feature_name_list=['web_analytics_desktop_user_90days'],
+#         df_id_column_name='client_id_hash',
+#         df_timeid_column_name='run_date'
+# )
