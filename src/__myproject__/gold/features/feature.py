@@ -16,47 +16,27 @@ from typing import List
 
 class Feature:
 
-    def __init__(self, name: str, entity_name: str, description: str, dtype: str): 
+    def __init__(self, name: str, description: str, dtype: str): 
         
         self.name = name
         self.description = description
-        self.entity_name = entity_name
         self.dtype = dtype
 
 class Entity:
     def __init__(
         self,
         name: str,
-        config: str
+        id_column_name: str, 
+        id_column_type: str, 
+        timeid_column_name: str,
+        timeid_column_type: str 
      ):
 
      self.name = name 
-     self.id_column_name = config['id_column_name']
-     self.id_column_type = config['id_column_type']
-     self.timeid_column_name = config['timeid_column_name']
-     self.timeid_column_type = config['timeid_column_type']
-
-
-class EntityConfigManager:
-
-    def __init__(
-        self,
-        entities_config
-     ):
-
-     self.__entities_config = entities_config
-
-    def exists(self, name: str) -> bool:
-        for ec in self.__entities_config:
-            if ec.name == name:
-                return True
-        return False
-
-    def get(self, name: str):
-        for ec in self.__entities_config:
-            if ec.name == name:
-                return ec
-        raise Exception(f'Entity with name {name} not found among featurestorebundle.entities')
+     self.id_column_name = id_column_name
+     self.id_column_type = id_column_type
+     self.timeid_column_name = timeid_column_name
+     self.timeid_column_type = timeid_column_type
 
 class EntityManager:
 
@@ -64,14 +44,12 @@ class EntityManager:
         self,
         fs_db_name: str,
         tb_name_prefix: str,
-        entity_config_manager: EntityConfigManager,
         table_existence_checker: TableExistenceChecker,
         spark: SparkSession
      ):
      
      self.fs_db_name = fs_db_name
      self.tb_name_prefix = tb_name_prefix
-     self.__entity_config_manager = entity_config_manager
      self.__table_existence_checker = table_existence_checker
      self.__spark = spark
 
@@ -81,10 +59,6 @@ class EntityManager:
     def get_tablename(self, entity_name: str) -> str:
         return f'{self.tb_name_prefix}{entity_name}'
 
-    def get(self, entity_name: str) -> Entity:
-        entity_config = self.__entity_config_manager.get(entity_name)
-        return Entity(entity_name, entity_config)
-    
     def get_values(self, entity_name: str):
         return self.__spark.read.table(self.get_full_tablename(entity_name))
     
@@ -98,7 +72,7 @@ class EntityManager:
             self.fs_db_name, self.get_tablename(entity_name)
         )
     
-    def register(self, entity_name: str):
+    def register(self, entity: Entity):
         def build_create_entity_table_string(entity: Entity):
             return (
                 f'CREATE TABLE IF NOT EXISTS {self.get_full_tablename(entity.name)}\n'
@@ -108,9 +82,6 @@ class EntityManager:
                 f'PARTITIONED BY ({entity.timeid_column_name})\n'
                 f'COMMENT "The table contains entity {entity.name} features"\n'
         )
-        entity_config = self.__entity_config_manager.get(entity_name)
-        entity = Entity(entity_name, entity_config)
-
         return self.__spark.sql(build_create_entity_table_string(entity)).collect()
 
 class FeatureManager:
@@ -128,13 +99,13 @@ class FeatureManager:
      self.__table_existence_checker = table_existence_checker
      self.__spark = spark
 
-    def register(self, feature: Feature):
+    def register(self, entity: Entity, feature: Feature):
         def build_add_column_string(table_name):
             return (
                 f'ALTER TABLE {self.fs_db_name}.{table_name}\n'
                 f'ADD COLUMNS ({feature.name} {feature.dtype} COMMENT "{feature.description}")\n'
         )
-        entity_tablename = self.__entity_manager.get_tablename(feature.entity_name)
+        entity_tablename = self.__entity_manager.get_tablename(entity.name)
         return self.__spark.sql(build_add_column_string(entity_tablename)).collect()
     
     def is_registred(self, feature_name: str, entity_name:str):
@@ -145,31 +116,26 @@ class FeatureManager:
         return feature_name in \
                 self.__entity_manager.get_registred_feature_names(entity_name)
 
-    def update_metadata(self, feature: Feature):
+    # TODO: is not used yet
+    def update_metadata(self, entity: Entity, feature: Feature):
         def build_alter_column_string(table_name):
             return (
                 f'ALTER TABLE {self.fs_db_name}.{table_name}\n'
                 f'ALTER COLUMN ({feature.name} {feature.dtype} COMMENT "{feature.description})"\n'
         )
-        entity_tablename = self.__entity_manager.get_tablename(feature.entity_name)
+        entity_tablename = self.__entity_manager.get_tablename(entity.name)
         return self.__spark.sql(build_alter_column_string(entity_tablename)).collect()
     
-    def get_values(self, entity_name:str, feature_name: List[str]=None):
-
-        entity = self.__entity_manager.get(entity_name)
+    def get_values(self, entity_name: str, feature_name: List[str]=None):
+        
+        df = self.__entity_manager.get_values(entity_name)
         if not feature_name:
-            return self.__entity_manager.get_values(entity.name)
+            return df
 
-        return (
-            self.__entity_manager.get_values(entity.name)
-            .select(
-                [entity.id_column_name,
-                entity.timeid_column_name] + \
-                feature_name
-            )
-        )     
+        return df.select(df.columns[:2] + feature_name)   
 
     def update_existing_insert_new_values(self, 
+                                        entity: Entity,
                                         feature: Feature,
                                         df_values: DataFrame,
                                         input_df_id_column_name: str,
@@ -188,8 +154,7 @@ class FeatureManager:
                 f'VALUES ({input_df_id_column_name}, {input_df_timeid_column_name}, {feature.name})\n'
         )
 
-        entity = self.__entity_manager.get(feature.entity_name)
-        entity_tablename = self.__entity_manager.get_full_tablename(feature.entity_name)
+        entity_tablename = self.__entity_manager.get_full_tablename(entity.name)
         
         # store data to a view
         run_date = datetime.now().date().strftime("%Y%m%d")
@@ -221,22 +186,23 @@ class FeatureStore:
     def __materialize_database(self):
         return self.__spark.sql(f'CREATE DATABASE IF NOT EXISTS {self.db_name}').collect()
 
-    def __register(self, feature: Feature): 
-        if not self.__entity_manager.is_registred(feature.entity_name):
-            self.__entity_manager.register(feature.entity_name)
-        if not self._contains_feature(feature.name, feature.entity_name):
-            self.__feature_manager.register(feature)    
+    def __register(self, entity: Entity, feature: Feature): 
+        if not self.__entity_manager.is_registred(entity.name):
+            self.__entity_manager.register(entity)
+        if not self._contains_feature(feature.name, entity.name):
+            self.__feature_manager.register(entity, feature)    
 
     def _contains_feature(self, feature_name: str, entity_name: str):
         return self.__feature_manager.is_registred(feature_name, entity_name)
     
-    def update(self, feature: Feature, df_new_values: DataFrame,
+    def update(self, entity: Entity, feature: Feature, df_new_values: DataFrame,
             input_df_id_column_name: str, input_df_timeid_column_name: str):
 
-        if not self._contains_feature(feature.name, feature.entity_name):
-            self.__register(feature)
+        if not self._contains_feature(feature.name, entity.name):
+            self.__register(entity, feature)
 
         self.__feature_manager.update_existing_insert_new_values(
+            entity,
             feature,
             df_new_values,
             input_df_id_column_name,
@@ -253,15 +219,15 @@ class FeatureStore:
 
         return self.__feature_manager.get_values(entity_name, feature_name_list)
     
-    def _get_for_id_timeid(self,
-             entity_name: str,
+    def get_for_id_timeid(self,
+            entity_name: str,
             df_id_timeid: DataFrame,
             df_id_column_name: str,
             df_timeid_column_name: str,
-            feature_name_list: List[str]
+            feature_name_list: List[str]=None
         ):
 
-        entity = self.__entity_manager.get(entity_name)
+        feature_name_list = feature_name_list or []
         df_feature = self.get(entity_name, feature_name_list)
 
         df_join = (
@@ -269,8 +235,8 @@ class FeatureStore:
             .alias("df_id")
             .join(
                 df_feature.alias("df_feature"),
-                ((col(f"df_id.{df_id_column_name}") == col(f"df_feature.{entity.id_column_name}")) & \
-                    (col(f"df_id.{df_timeid_column_name}") == col(f"df_feature.{entity.timeid_column_name}"))),
+                ((col(f"df_id.{df_id_column_name}") == col(f"df_feature.{df_feature.columns[0]}")) & \
+                 (col(f"df_id.{df_timeid_column_name}") == col(f"df_feature.{df_feature.columns[1]}"))),
                 "left"
             )
             .select(["df_id.*"] + feature_name_list)
@@ -280,19 +246,44 @@ class FeatureStore:
 
 class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
 
-    def __init__(self, *args, **kwargs): # TODO: add explicit 
+    def __init__(
+        self,
+        *args,
+        feature_name:str,
+        description:str, 
+        dtype: str, 
+        entity_name: str,
+        fs_id_column_name: str, 
+        fs_id_column_type: str, 
+        fs_timeid_column_name: str, 
+        fs_timeid_column_type: str, 
+        df_id_column: str, 
+        timeid_column: str, 
+        write: bool,
+        skip_computed: bool=False,
+        display: bool=False
+    ): 
 
-        self.__feature = Feature(name = kwargs.get('feature_name'),
-                               entity_name=kwargs.get('entity'),
-                               description=kwargs.get('description'),
-                               dtype=kwargs.get('dtype'))
+        self.__feature = Feature(
+            name = feature_name,
+            description=description,
+            dtype=dtype
+        )
+
+        self.__entity = Entity(
+            name=entity_name,
+            id_column_name=fs_id_column_name,
+            id_column_type=fs_id_column_type,
+            timeid_column_name=fs_timeid_column_name,
+            timeid_column_type=fs_timeid_column_type,
+        )                       
 
         self.__df = args[0]._result
-        self.__df_id_column = kwargs.get('id_column')
-        self.__df_timeid_column = kwargs.get('timeid_column')
-        self.__skip_computed = kwargs.get('skip_computed', False)
-        self.__display = kwargs.get('display', False)
-        self.__write = kwargs.get('write')
+        self.__df_id_column = df_id_column
+        self.__df_timeid_column = timeid_column
+        self.__skip_computed = skip_computed
+        self.__display = display
+        self.__write = write
 
     def onExecution(self, container: ContainerInterface):
 
@@ -304,7 +295,7 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
         arguments = argumentsResolver.resolve(inspectFunction(self._function), self._decoratorArgs)
 
         # proceed if feature is not registred
-        if not feature_store._contains_feature(self.__feature.name, self.__feature.entity_name):
+        if not feature_store._contains_feature(self.__feature.name, self.__entity.name):
             return self._function(*arguments)
         
         # proceeed of requested in decorator args
@@ -312,8 +303,8 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
             return self._function(*arguments)
         
         # get feature values for given ids 
-        df_for_id_timeid = feature_store._get_for_id_timeid(
-            entity_name=self.__feature.entity_name,
+        df_for_id_timeid = feature_store.get_for_id_timeid(
+            entity_name=self.__entity.name,
             df_id_timeid=self.__df,
             df_id_column_name=self.__df_id_column,
             df_timeid_column_name=self.__df_timeid_column,
@@ -340,6 +331,7 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
         
         if self.__write:
             feature_store.update(
+                entity=self.__entity,
                 feature=self.__feature, 
                 df_new_values=self._result,
                 input_df_id_column_name=self.__df_id_column,
@@ -352,8 +344,8 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
                 .drop_duplicates()
             )
 
-            self._result = feature_store._get_for_id_timeid(
-                entity_name=self.__feature.entity_name,
+            self._result = feature_store.get_for_id_timeid(
+                entity_name=self.__entity.name,
                 df_id_timeid=df_id_timeid_input,
                 df_id_column_name=self.__df_id_column,
                 df_timeid_column_name=self.__df_timeid_column,
@@ -363,7 +355,18 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
         if self.__display and container.getParameters().datalakebundle.notebook.display.enabled is True:
             displayFunction(self._result)
 
-class clientFeature(feature, metaclass=DecoratorMetaclass):
+class clientFeature(feature):
+
+    # fails as DecoratorMetaclass required __init__
+    # entity = 'client'
+    # id_column = 'client_id_hash'
+    
+    ENTITY_NAME = 'client'
+    DF_ID_COLUMN = 'client_id_hash'
+    FS_ID_COLUMN_NAME = 'client_id_hash'
+    FS_ID_COLUMN_TYPE = 'STRING'
+    FS_TIMEID_COLUMN_NAME = 'trigger_timestamp'
+    FS_TIMEID_COLUMN_TYPE = 'INT'
 
     def __init__(
         self,
@@ -374,8 +377,12 @@ class clientFeature(feature, metaclass=DecoratorMetaclass):
         super().__init__( 
             *args,
             **kwargs,
-            entity = 'client', 
-            id_column = 'client_id_hash'
+            entity_name = clientFeature.ENTITY_NAME, 
+            df_id_column = clientFeature.DF_ID_COLUMN,
+            fs_id_column_name = clientFeature.FS_ID_COLUMN_NAME,
+            fs_id_column_type = clientFeature.FS_ID_COLUMN_TYPE,
+            fs_timeid_column_name = clientFeature.FS_TIMEID_COLUMN_NAME,
+            fs_timeid_column_type = clientFeature.FS_TIMEID_COLUMN_TYPE
         )
 
 class featureLoader(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):

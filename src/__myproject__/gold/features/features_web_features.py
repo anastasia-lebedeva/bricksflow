@@ -101,7 +101,7 @@ suffix_name = '__a0'
 
 # COMMAND ----------
 
-# MAGIC %md #### Transformations
+# MAGIC %md #### Register feature (or compute value for a `run_date`)
 
 # COMMAND ----------
 
@@ -156,16 +156,31 @@ def feature_desktop_user_for_tw(df: DataFrame):
     return df_web_mobile_user
 
 
-# @featureLoader(display=True)
-# def load_covid_statistics(feature_store: FeatureStore):
-#     return feature_store.get(entity_name='client',
-#                             feature_name_list=['web_analytics_desktop_user_90days'])
+# MAGIC %md #### Access values in feature store
 
-# @featureLoader(display=True)
-# def load_covid_statistics(feature_store: FeatureStore):
-#     return feature_store.get(entity_name='client',
-#                             feature_name_list=['web_analytics_desktop_user_90days', 'web_analytics_desktop_user_120days'])
+@featureLoader(display=True)
+def load_features_onefeature(feature_store: FeatureStore):
+    return feature_store.get(entity_name='client',
+                            feature_name_list=['web_analytics_desktop_user_90days'])
+
+@featureLoader(display=True)
+def load_features_multiple(feature_store: FeatureStore):
+    return feature_store.get(entity_name='client',
+                            feature_name_list=['web_analytics_desktop_user_90days', 'web_analytics_desktop_user_120days'])
                         
 @featureLoader(display=True)
-def load_covid_statistics(feature_store: FeatureStore):
+def load_features_all(feature_store: FeatureStore):
     return feature_store.get(entity_name='client')
+
+@featureLoader(
+    sdm_web_data_with_rundate_filtered,
+    display=True
+)
+def load_features_for_id_timeid(df: DataFrame, feature_store: FeatureStore):
+     return feature_store.get_for_id_timeid(
+        df_id_timeid=df,
+        entity_name='client',
+        feature_name_list=['web_analytics_desktop_user_90days'],
+        df_id_column_name='client_id_hash',
+        df_timeid_column_name='run_date'
+    )
