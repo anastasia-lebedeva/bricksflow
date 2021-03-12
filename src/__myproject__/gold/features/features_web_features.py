@@ -82,8 +82,11 @@ def read_web_data_detail(spark: SparkSession):
 
 #dbutils.widgets.text('time_window', '90', 'time_window')
 #dbutils.widgets.text('run_date', ((datetime.now().date() - timedelta(days=1)).strftime("%Y%m%d")), 'run_date')
+#dbutils.widgets.text('target_date_column_name', '', 'target_date_column_name')
+
 
 time_window = 90
+target_date_column_name=''
 run_date = datetime.now().date().strftime("%Y%m%d")
 start_date = (datetime.strptime(str(run_date), "%Y%m%d") - timedelta(days=time_window)).strftime("%Y%m%d")
 
@@ -105,32 +108,51 @@ suffix_name = '__a0'
 
 # COMMAND ----------
 
-# New: add tuntimecolumn
+# MAGIC %md ##### Use a fixed date or a `target_date` column specified in by a widget
+
 @transformation(read_sdm_web_data, display=False)
-def sdm_web_data_with_rundate_filtered(df: DataFrame):
-    return (df
-           .withColumn('run_date', f.lit(run_date))
-           .select(
-                "session_start_datetime",
-                "date",
-                "client_id_hash",
-                "device_type",
-                "run_date"
+def sdm_web_data_append_target_col(df: DataFrame):
+    if not target_date_column_name:
+        return (
+            df
+            .withColumn('target_date', f.lit(run_date))
+            .withColumn('start_date', f.lit(start_date))
         )
-        .filter(f.col("date") >= start_date)
-        .filter(f.col("date") <= int(run_date))
+    else:
+        # make sure column you use for filtering is of date type
+        return (
+            df
+            .withColumn('target_date', f.to_date(f.col(target_date_column_name)))
+            .withColumn('start_date', f.date_sub(f.col('target_date'), time_window))
+        )
+
+# COMMAND ----------
+# MAGIC %md ##### Filter data by the date
+
+@transformation(sdm_web_data_append_target_col, display=False)
+def sdm_web_with_target_filter_bytarget_date(df: DataFrame):
+    return (
+        df
+        .filter(f.col("date") >= f.col("start_date"))
+        .filter(f.col("date") <= f.col("target_date"))
+        .select(
+            "session_start_datetime",
+            "date",
+            "client_id_hash",
+            "device_type",
+            "target_date"
+        )
     )
 
 # COMMAND ----------
-# feature: web_analytics_mobile_user 
-
+# MAGIC %md ##### Register two features using a single `@clientFeature` decorator
 
 @clientFeature(
-    sdm_web_data_with_rundate_filtered,
+    sdm_web_with_target_filter_bytarget_date,
     feature_name=[f"{prefix_name}_mobile_user_{time_window}days", f"{prefix_name}_tablet_user_{time_window}days"],
     description=["Web analytics feature for mobile user", "Web analytics feature for tablet user"],
     dtype=["DOUBLE", "DOUBLE"],
-    timeid_column="run_date",
+    timeid_column="target_date",
     skip_computed=True,
     write=True,
     display=True
@@ -157,7 +179,7 @@ def feature_mobile_tablet_user_for_tw(df: DataFrame):
                 | (f.col("device_type") == ("desktop")), 0
             )
         )
-        .groupBy("client_id_hash", "run_date")
+        .groupBy("client_id_hash", "target_date")
         .agg(
             f.round(f.avg("is_mobile"), 1).alias(feature_mob_name),
             f.round(f.avg("is_tablet"), 1).alias(feature_tabl_name)
@@ -165,15 +187,16 @@ def feature_mobile_tablet_user_for_tw(df: DataFrame):
     )
 
 # COMMAND ----------
+# MAGIC %md ##### Register a single feature using a `@clientFeature` decorator
 
 @clientFeature(
-    sdm_web_data_with_rundate_filtered,
+    sdm_web_with_target_filter_bytarget_date,
     feature_name=f"{prefix_name}_desktop_user_{time_window}days",
     description="Web analytics feature for desktop user",
     dtype="DOUBLE",
-    timeid_column="run_date",
-    skip_computed=True,
-    write=True,
+    timeid_column="target_date",
+    skip_computed=False,
+    write=False,
     display=True
 )
 def feature_desktop_user_for_tw(df: DataFrame):
@@ -191,7 +214,7 @@ def feature_desktop_user_for_tw(df: DataFrame):
                 0
             )
         )
-        .groupBy("client_id_hash", "run_date")
+        .groupBy("client_id_hash", "target_date")
         .agg(
             f.round(f.avg("is_desktop"), 1).alias(feature_desc_name)
         )
@@ -199,31 +222,34 @@ def feature_desktop_user_for_tw(df: DataFrame):
 
 # COMMAND ----------
 
-# MAGIC %md #### Access values in feature store
+# MAGIC %md #### Access values in the feature store
 
-# @featureLoader(display=True)
-# def load_features_onefeature(feature_store: FeatureStore):
-#     return feature_store.get(entity_name='client',
-#                             feature_name_list=['web_analytics_desktop_user_90days'])
+@featureLoader(display=True)
+def load_features_onefeature(feature_store: FeatureStore):
+    return feature_store.get(entity_name='client',
+                            feature_name_list=['web_analytics_desktop_user_90days'])
 
-# @featureLoader(display=True)
-# def load_features_multiple(feature_store: FeatureStore):
-#     return feature_store.get(entity_name='client',
-#                             feature_name_list=['web_analytics_desktop_user_90days', 'web_analytics_desktop_user_120days'])
-                        
-# @featureLoader(display=True)
-# def load_features_all(feature_store: FeatureStore):
-#     return feature_store.get(entity_name='client')
 
-# @featureLoader(
-#     sdm_web_data_with_rundate_filtered,
-#     display=True
-# )
-# def load_features_for_id_timeid(df: DataFrame, feature_store: FeatureStore):
-#      return feature_store.get_for_id_timeid(
-#         df_id_timeid=df,
-#         entity_name='client',
-#         feature_name_list=['web_analytics_desktop_user_90days'],
-#         df_id_column_name='client_id_hash',
-#         df_timeid_column_name='run_date'
-# )
+@featureLoader(display=True)
+def load_features_multiple(feature_store: FeatureStore):
+    return feature_store.get(entity_name='client',
+                            feature_name_list=['web_analytics_desktop_user_90days', 'web_analytics_desktop_user_120days'])
+
+
+@featureLoader(display=True)
+def load_features_all(feature_store: FeatureStore):
+    return feature_store.get(entity_name='client')
+
+
+@featureLoader(
+    sdm_web_with_target_filter_bytarget_date,
+    display=True
+)
+def load_features_for_id_timeid(df: DataFrame, feature_store: FeatureStore):
+     return feature_store.get_for_id_timeid(
+        df_id_timeid=df,
+        entity_name='client',
+        feature_name_list=['web_analytics_desktop_user_90days'],
+        df_id_column_name='client_id_hash',
+        df_timeid_column_name='target_date'
+)

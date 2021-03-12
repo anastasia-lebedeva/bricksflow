@@ -123,7 +123,6 @@ class FeatureManager:
 
         if not self.__entity_manager.is_registred(entity_name):
             return False
-
         return feature_name in \
                 self.__entity_manager.get_registred_feature_names(entity_name)
 
@@ -132,7 +131,6 @@ class FeatureManager:
         df = self.__entity_manager.get_values(entity_name)
         if not feature_name:
             return df
-
         return df.select(df.columns[:2] + feature_name)   
 
     def update_existing_insert_new_values(self, 
@@ -304,12 +302,6 @@ class feature(DataFrameReturningDecorator, metaclass=DecoratorMetaclass):
         self.__feature_name_list = feature_name
         self.__feature_description_list = description
         self.__feature_dtype_list = dtype
-
-        # self.__feature = Feature(
-        #     name = feature_name,
-        #     description=description,
-        #     dtype=dtype
-        # )
 
         self.__entity = Entity(
             name=entity_name,
