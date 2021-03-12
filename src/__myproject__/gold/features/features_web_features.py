@@ -64,16 +64,6 @@ def read_web_data_detail(spark: SparkSession):
 
 # COMMAND ----------
 
-# df_web_data = spark.read.parquet(
-#     "abfss://csas@dslabdigilakegen2.dfs.core.windows.net/DATA/EXPORT_PERSONA360/web_data_tables/web_data_sample_20200901_20201231"
-# )
-
-# df_web_data_detail = spark.read.parquet(
-#     "abfss://csas@dslabdigilakegen2.dfs.core.windows.net/DATA/EXPORT_PERSONA360/web_data_tables/web_data_detail_sample_20200901_20201231"
-# )
-
-# COMMAND ----------
-
 # MAGIC %md ##### Input parameters - Widgets
 # MAGIC * run_date 
 # MAGIC * time_window
@@ -155,44 +145,44 @@ def sdm_web_with_target_filter_bytarget_date(df: DataFrame):
 
 # COMMAND ----------
 
-# @clientFeature(
-#     sdm_web_with_target_filter_bytarget_date,
-#     feature_name=[f"{prefix_name}_mobile_user_{time_window}days", f"{prefix_name}_tablet_user_{time_window}days"],
-#     description=["Web analytics feature for mobile user", "Web analytics feature for tablet user"],
-#     dtype=["DOUBLE", "DOUBLE"],
-#     timeid_column="target_date",
-#     skip_computed=True,
-#     write=True,
-#     display=True
-# )
-# def feature_mobile_tablet_user_for_tw(df: DataFrame):
+@clientFeature(
+    sdm_web_with_target_filter_bytarget_date,
+    feature_name=[f"{prefix_name}_mobile_user_{time_window}days", f"{prefix_name}_tablet_user_{time_window}days"],
+    description=["Web analytics feature for mobile user", "Web analytics feature for tablet user"],
+    dtype=["DOUBLE", "DOUBLE"],
+    timeid_column="target_date",
+    skip_computed=True,
+    write=True,
+    display=True
+)
+def feature_mobile_tablet_user_for_tw(df: DataFrame):
 
-#     feature_mob_name=f"{prefix_name}_mobile_user_{time_window}days"
-#     feature_tabl_name=f"{prefix_name}_tablet_user_{time_window}days"
+    feature_mob_name=f"{prefix_name}_mobile_user_{time_window}days"
+    feature_tabl_name=f"{prefix_name}_tablet_user_{time_window}days"
 
-#     # aggregation/calculation of feature
-#     return (
-#         df.drop_duplicates()
-#         .withColumn(
-#             "is_mobile",
-#             f.when((f.col("device_type") == "mobile"), 1)
-#             .when((f.col("device_type") == ("tablet"))
-#                     | (f.col("device_type") == ("desktop")), 0
-#                 )
-#         )
-#         .withColumn(
-#             "is_tablet",
-#             f.when((f.col("device_type") == "tablet"), 1).when(
-#                 (f.col("device_type") == ("mobile"))
-#                 | (f.col("device_type") == ("desktop")), 0
-#             )
-#         )
-#         .groupBy("client_id_hash", "target_date")
-#         .agg(
-#             f.round(f.avg("is_mobile"), 1).alias(feature_mob_name),
-#             f.round(f.avg("is_tablet"), 1).alias(feature_tabl_name)
-#         )
-#     )
+    # aggregation/calculation of feature
+    return (
+        df.drop_duplicates()
+        .withColumn(
+            "is_mobile",
+            f.when((f.col("device_type") == "mobile"), 1)
+            .when((f.col("device_type") == ("tablet"))
+                    | (f.col("device_type") == ("desktop")), 0
+                )
+        )
+        .withColumn(
+            "is_tablet",
+            f.when((f.col("device_type") == "tablet"), 1).when(
+                (f.col("device_type") == ("mobile"))
+                | (f.col("device_type") == ("desktop")), 0
+            )
+        )
+        .groupBy("client_id_hash", "target_date")
+        .agg(
+            f.round(f.avg("is_mobile"), 1).alias(feature_mob_name),
+            f.round(f.avg("is_tablet"), 1).alias(feature_tabl_name)
+        )
+    )
 
 # COMMAND ----------
 
@@ -237,35 +227,35 @@ def feature_desktop_user_for_tw(df: DataFrame):
 
 # COMMAND ----------
 
-# @featureLoader(display=True)
-# def load_features_onefeature(feature_store: FeatureStore):
-#     return feature_store.get(entity_name='client',
-#                             feature_name_list=['web_analytics_desktop_user_90days'])
+@featureLoader(display=True)
+def load_features_onefeature(feature_store: FeatureStore):
+    return feature_store.get(entity_name='client',
+                            feature_name_list=['web_analytics_desktop_user_90days'])
 
 
-# @featureLoader(display=True)
-# def load_features_multiple(feature_store: FeatureStore):
-#     return feature_store.get(entity_name='client',
-#                             feature_name_list=['web_analytics_desktop_user_90days', 'web_analytics_desktop_user_120days'])
+@featureLoader(display=True)
+def load_features_multiple(feature_store: FeatureStore):
+    return feature_store.get(entity_name='client',
+                            feature_name_list=['web_analytics_desktop_user_90days', 'web_analytics_desktop_user_120days'])
 
 
-# @featureLoader(display=True)
-# def load_features_all(feature_store: FeatureStore):
-#     return feature_store.get(entity_name='client')
+@featureLoader(display=True)
+def load_features_all(feature_store: FeatureStore):
+    return feature_store.get(entity_name='client')
 
 
-# @featureLoader(
-#     sdm_web_with_target_filter_bytarget_date,
-#     display=True
-# )
-# def load_features_for_id_timeid(df: DataFrame, feature_store: FeatureStore):
-#      return feature_store.get_for_id_timeid(
-#         df_id_timeid=df,
-#         entity_name='client',
-#         feature_name_list=['web_analytics_desktop_user_90days'],
-#         df_id_column_name='client_id_hash',
-#         df_timeid_column_name='target_date'
-# )
+@featureLoader(
+    sdm_web_with_target_filter_bytarget_date,
+    display=True
+)
+def load_features_for_id_timeid(df: DataFrame, feature_store: FeatureStore):
+     return feature_store.get_for_id_timeid(
+        df_id_timeid=df,
+        entity_name='client',
+        feature_name_list=['web_analytics_desktop_user_90days'],
+        df_id_column_name='client_id_hash',
+        df_timeid_column_name='target_date'
+)
 
 
 print("--- %s seconds ---" % (time.time() - start_time))
